@@ -25,7 +25,7 @@ warnings.filterwarnings('ignore')
 # 配置
 batchsize = 8 # 批大小,
 image_size = 256
-iters = 100 # 迭代次数
+iters = 200 # 迭代次数
 val_ratio = 0.2 # 训练/验证数据划分比例，80 / 20
 trainset_root = '../datasets/Train/Image'
 val_root = '../datasets/Train/Image'
@@ -34,7 +34,7 @@ test_root = '../datasets/Validation/Image'
 num_workers = 4
 init_lr = 1e-6
 optimizer_type = 'adam'
-device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+device = torch.device('cuda:3' if torch.cuda.is_available() else 'cpu')
 
 # 训练/验证数据集划分
 filelists = os.listdir(trainset_root)
@@ -70,11 +70,17 @@ class GOALS_sub2_dataset(Dataset):
     def __getitem__(self, idx):
 
         real_index, label = self.file_list[idx]
+        # real_index = np.array(real_index)
+        # real_index = torch.from_numpy(real_index)
+        label = np.array(label)
+        label = torch.from_numpy(label)
         img_path = os.path.join(self.dataset_root, real_index)    
         img = cv2.imread(img_path)
+        img = trans.ToTensor(img)
         
         if self.img_transforms is not None:
             img = self.img_transforms(img)
+            img = img/255
  
         # normlize on GPU to save CPU Memory and IO consuming.
         # img = (img / 255.).astype("float32")
@@ -82,10 +88,10 @@ class GOALS_sub2_dataset(Dataset):
         # img = img.transpose(2, 0).transpose(1,2) # H, W, C -> C, H, W
 
         if self.mode == 'test':
-            return img, real_index
+            return img.float(), real_index
 
         if self.mode == "train":            
-            return img, label
+            return img.float(), label.long()
 
     def __len__(self):
         return len(self.file_list)
@@ -115,12 +121,12 @@ class Model(nn.Module):
         super(Model, self).__init__()
         self.feature = resnet50(pretrained=True) # 移除最后一层全连接
         # self.feature = resnet101(pretrained=True, num_classes=2) # 移除最后一层全连接
-        self.fc1 = nn.Linear(2048, 1024)
+        # fc_inputs = self.feature.fc.in_features
+        self.fc1 = nn.Linear(1000, 1024) # resnet50后面连接了一个fc层，输出维度是1000
         self.fc2 = nn.Linear(1024, 2)
 
     def forward(self, img):
-        feature = self. feature(img)
-        feature = torch.flatten(feature, 1)
+        feature = self.feature(img)
         out1 = self.fc1(feature)
         logit = self.fc2(out1)
 
@@ -136,12 +142,15 @@ def train(model, iters, train_dataloader, val_dataloader, optimizer, criterion, 
     n_correct = 0
     n_total = 0
     while iter < iters:
-        for data in train_dataloader: # 便利dataloader得到的data为一个batch里的图像和label
+        for data in enumerate(train_dataloader): # 便利dataloader得到的data为一个batch里的图像和label
             iter += 1
+            # print(iter)
             if iter > iters:
                 break
-            imgs = (data[0] / 255.).to(torch.float32).to(device)
-            labels = data[1].to(torch.int64).to(device)
+            imgs = (data[0] / 255.)
+            labels = data[1]
+            # imgs = (data[0] / 255.).to(torch.float32).to(device)
+            # labels = data[1].to(torch.int64).to(device)
             # print(labels)
             # labels_ = torch.unsqueeze(labels, axis=1) # 维度扩展：一维80-->二维80*1
             logits = model(imgs) 
@@ -153,7 +162,7 @@ def train(model, iters, train_dataloader, val_dataloader, optimizer, criterion, 
             _, indices = logits.max(dim=1) # 找出行最大值，返回索引
             n_correct += sum(indices==labels)
             n_total += len(labels)
-            acc = n_correct.cpu().detach().numpy() * 1.0 /n_total
+            acc = n_correct.cpu().numpy() * 1.0 /n_total
             # one_hot_labels = paddle.fluid.layers.one_hot(labels_, 2, allow_out_of_range=False)
             loss = criterion(logits, labels)            
             # print(loss.numpy())
@@ -163,8 +172,8 @@ def train(model, iters, train_dataloader, val_dataloader, optimizer, criterion, 
 
 
             # model.clear_gradients()
-            avg_loss_list.append(loss.numpy()[0])
-            avg_acc_list.append(acc.numpy())
+            avg_loss_list.append(loss.cpu().detach().numpy())
+            avg_acc_list.append(acc)
             
 
             if iter % log_interval == 0:
@@ -189,22 +198,24 @@ def val(model, val_dataloader, criterion):
     n_correct = 0
     n_total = 0
     with torch.no_grad():
-        for data in val_dataloader:
-            imgs = (data[0] / 255.).astype('float32')
-            labels = data[1].astype('int64')
+        for data in enumerate(val_dataloader):
+            imgs = (data[0] / 255.).to(torch.float32).to(device)
+            labels = data[1].to(torch.int64).to(device)
+            # imgs = data[0]
+            # labels = data[1]
             logits = model(imgs)
             _, indices = logits.max(dim=1) # 找出行最大值，返回索引
             n_correct += sum(indices==labels)
             n_total += len(labels)
-            acc = n_correct.cpu().detach().numpy() * 1.0 /n_total
+            acc = n_correct.cpu().numpy() * 1.0 /n_total
             loss = criterion(logits, labels)     
-            loss_list.append(loss.numpy()[0])
-            acc_list.append(acc.numpy()) 
+            loss_list.append(loss.cpu().detach().numpy())
+            acc_list.append(acc)
 
     avg_loss = np.array(loss_list).mean()
     avg_acc = np.array(acc_list).mean()
-    plot_loss(loss_list)
-    plot_accuracy(acc_list)
+    # plot_loss(loss_list)
+    # plot_accuracy(acc_list)
 
     return avg_loss, avg_acc      
 
@@ -239,13 +250,13 @@ val_dataset = GOALS_sub2_dataset(img_transforms=img_val_transforms,
 
 train_loader = DataLoader(dataset=train_dataset,
                         batch_size=batchsize,
-                        num_workers=num_workers,
+                        num_workers=0,
                         shuffle=True,
                         drop_last=True)
 
 val_loader = DataLoader(dataset=val_dataset,
                         batch_size=batchsize,
-                        num_workers=num_workers,
+                        num_workers=0,
                         shuffle=True,
                         drop_last=True)
 
