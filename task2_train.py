@@ -11,12 +11,12 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelBinarizer
 from sklearn.metrics import auc
 from torch.utils.data import Dataset, DataLoader
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.models import resnet50, resnet101
-
+from models.task2_model import Model
+from dataset_functions.task2_dataset import GOALS_sub2_dataset
 import torchvision.transforms as trans
 
 import warnings
@@ -25,7 +25,7 @@ warnings.filterwarnings('ignore')
 # 配置
 batchsize = 8 # 批大小,
 image_size = 256
-iters = 200 # 迭代次数
+iters = 1000 # 迭代次数
 val_ratio = 0.2 # 训练/验证数据划分比例，80 / 20
 trainset_root = '../datasets/Train/Image'
 val_root = '../datasets/Train/Image'
@@ -37,69 +37,16 @@ optimizer_type = 'adam'
 device = torch.device('cuda:3' if torch.cuda.is_available() else 'cpu')
 
 # 训练/验证数据集划分
-filelists = os.listdir(trainset_root)
+filelists = os.listdir(trainset_root) # 返回文件夹中包含文件名字的列表
 train_filelists, val_filelists = train_test_split(filelists, test_size=val_ratio, random_state=42)
 print("Total Nums: {}, train: {}, val: {}".format(len(filelists), len(train_filelists), len(val_filelists)))
 print(val_filelists)
 
-# 数据加载（继承torch.utils.data中的Dataset类）
-class GOALS_sub2_dataset(Dataset):
-    def __init__(self,
-                img_transforms,
-                dataset_root,
-                label_file='',
-                filelists=None,
-                numclasses=2,
-                mode='train'):
-                self.dataset_root = dataset_root
-                self.img_transforms = img_transforms
-                self.mode = mode.lower()
-                self.num_classes = numclasses
-
-                if self.mode == 'train': # 如果输入了mode，train或test，数据集为dataset_root中图片
-                    label = {row['ImgName']:row[1]
-                            for _, row in pd.read_excel(label_file).iterrows()}
-                    self.file_list = [[f, label[int(f.split('.')[0])]] for f in os.listdir(dataset_root)]
-
-                elif self.mode == "test":
-                    self.file_list = [[f, None] for f in os.listdir(dataset_root)]
-                
-                if filelists is not None:  # 如果输入filelists，数据集为filelists中图片,dataset_root不起作用
-                    self.file_list = [item for item in self.file_list if item[0] in filelists]
-    
-    def __getitem__(self, idx):
-
-        real_index, label = self.file_list[idx]
-        # real_index = np.array(real_index)
-        # real_index = torch.from_numpy(real_index)
-        label = np.array(label)
-        label = torch.from_numpy(label)
-        img_path = os.path.join(self.dataset_root, real_index)    
-        img = cv2.imread(img_path)
-        img = trans.ToTensor(img)
-        
-        if self.img_transforms is not None:
-            img = self.img_transforms(img)
-            img = img/255
- 
-        # normlize on GPU to save CPU Memory and IO consuming.
-        # img = (img / 255.).astype("float32")
-        # print(img.shape)
-        # img = img.transpose(2, 0).transpose(1,2) # H, W, C -> C, H, W
-
-        if self.mode == 'test':
-            return img.float(), real_index
-
-        if self.mode == "train":            
-            return img.float(), label.long()
-
-    def __len__(self):
-        return len(self.file_list)
 
 # plot loss and accuracy
 def plot_loss(loss):
     plt.figure()
-    loss = np.array(torch.tensor(loss, device='cpu'))
+    # loss = np.array(torch.tensor(loss, device='cpu'))
     plt.plot(loss, 'b-', label = 'val loss')
     plt.legend(fontsize=10)
     plt.title('loss', fontsize = 10)
@@ -108,29 +55,13 @@ def plot_loss(loss):
 
 def plot_accuracy(acc):
     plt.figure()
-    acc = np.array(acc)
+    # acc = np.array(acc)
     plt.plot(acc, 'b-', label = 'val acc')
     plt.legend(fontsize=10)
     plt.title('accuracy', fontsize = 10)
     plt.xlabel('Iteration/100')
     plt.savefig('./figures/task2/accuracy.png')
 
-# 网络模型
-class Model(nn.Module):
-    def __init__(self):
-        super(Model, self).__init__()
-        self.feature = resnet50(pretrained=True) # 移除最后一层全连接
-        # self.feature = resnet101(pretrained=True, num_classes=2) # 移除最后一层全连接
-        # fc_inputs = self.feature.fc.in_features
-        self.fc1 = nn.Linear(1000, 1024) # resnet50后面连接了一个fc层，输出维度是1000
-        self.fc2 = nn.Linear(1024, 2)
-
-    def forward(self, img):
-        feature = self.feature(img)
-        out1 = self.fc1(feature)
-        logit = self.fc2(out1)
-
-        return logit
 
 # 功能函数
 def train(model, iters, train_dataloader, val_dataloader, optimizer, criterion, log_interval, eval_interval, device):
@@ -142,13 +73,14 @@ def train(model, iters, train_dataloader, val_dataloader, optimizer, criterion, 
     n_correct = 0
     n_total = 0
     while iter < iters:
-        for data in enumerate(train_dataloader): # 便利dataloader得到的data为一个batch里的图像和label
+        for _, data in enumerate(train_dataloader): # 便利dataloader得到的data为一个batch里的图像和label
             iter += 1
             # print(iter)
             if iter > iters:
                 break
-            imgs = (data[0] / 255.)
-            labels = data[1]
+            imgs, labels = data
+            imgs = imgs.to(device)
+            labels = labels.to(device)
             # imgs = (data[0] / 255.).to(torch.float32).to(device)
             # labels = data[1].to(torch.int64).to(device)
             # print(labels)
@@ -162,7 +94,7 @@ def train(model, iters, train_dataloader, val_dataloader, optimizer, criterion, 
             _, indices = logits.max(dim=1) # 找出行最大值，返回索引
             n_correct += sum(indices==labels)
             n_total += len(labels)
-            acc = n_correct.cpu().numpy() * 1.0 /n_total
+            acc = n_correct.cpu().detach().numpy() * 1.0 /n_total
             # one_hot_labels = paddle.fluid.layers.one_hot(labels_, 2, allow_out_of_range=False)
             loss = criterion(logits, labels)            
             # print(loss.numpy())
@@ -184,23 +116,24 @@ def train(model, iters, train_dataloader, val_dataloader, optimizer, criterion, 
                 print('[TRAIN] iter={}/{} avg_loss={:.4f} avg_acc={:.4f}'.format(iter, iters, avg_loss, avg_acc))
 
             if iter % eval_interval == 0:
-                avg_loss, avg_acc = val(model, val_dataloader, criterion)
+                avg_loss, avg_acc = val(model, val_dataloader, criterion, device)
                 print('[EVAL] iter={}/{} avg_loss={:.4f} acc={:.4f}'.format(iter, iters, avg_loss, avg_acc))
                 if avg_acc >= best_acc:
                     best_acc = avg_acc
-                    torch.save(model.state_dict(), '/home/zhouziyu/miccai2022challenge/GOALS_code/task2_models/train1.pth')
+                    torch.save(model.state_dict(), '/home/zhouziyu/miccai2022challenge/GOALS_code/checkpoints/task2/train1.pth')
                 model.train()
 
-def val(model, val_dataloader, criterion):
+def val(model, val_dataloader, criterion, device):
     model.eval()
     loss_list = []
     acc_list = []
     n_correct = 0
     n_total = 0
     with torch.no_grad():
-        for data in enumerate(val_dataloader):
-            imgs = (data[0] / 255.).to(torch.float32).to(device)
-            labels = data[1].to(torch.int64).to(device)
+        for _, data in enumerate(val_dataloader):
+            imgs, labels = data
+            imgs = imgs.to(device)
+            labels = labels.to(device)
             # imgs = data[0]
             # labels = data[1]
             logits = model(imgs)
@@ -214,8 +147,8 @@ def val(model, val_dataloader, criterion):
 
     avg_loss = np.array(loss_list).mean()
     avg_acc = np.array(acc_list).mean()
-    # plot_loss(loss_list)
-    # plot_accuracy(acc_list)
+    plot_loss(loss_list)
+    plot_accuracy(acc_list)
 
     return avg_loss, avg_acc      
 
@@ -240,13 +173,17 @@ img_val_transforms = trans.Compose([
 
 train_dataset = GOALS_sub2_dataset(img_transforms=img_train_transforms,
                                     dataset_root=trainset_root,
+                                    filelists=train_filelists,
                                     label_file=train_label_root,
-                                    filelists=train_filelists)
+                                    mode='train'
+                                    )
 
 val_dataset = GOALS_sub2_dataset(img_transforms=img_val_transforms,
                                 dataset_root=trainset_root,
+                                filelists=val_filelists,
                                 label_file=train_label_root,
-                                filelists=val_filelists)
+                                mode='val'
+                                )
 
 train_loader = DataLoader(dataset=train_dataset,
                         batch_size=batchsize,
@@ -297,3 +234,56 @@ train(model, iters, train_loader, val_loader, optimizer, criterion, log_interval
 
 # submission_result = pd.DataFrame(cache, columns=['ImgName', 'GC_Pred'])
 # submission_result[['ImgName', 'GC_Pred']].to_csv("./submission_val_sub2.csv", index=False)
+
+# class GOALS_sub2_dataset(Dataset):
+#     def __init__(self,
+#                 img_transforms,
+#                 dataset_root,
+#                 label_file='',
+#                 filelists=None,
+#                 numclasses=2,
+#                 mode='train'):
+#                 self.img_transforms = img_transforms
+#                 self.dataset_root = dataset_root
+#                 self.mode = mode.lower()
+#                 self.num_classes = numclasses
+
+#                 if self.mode == 'train': # 如果输入了mode，train或test，数据集为dataset_root中图片
+#                     label = {row['ImgName']:row[1]
+#                             for _, row in pd.read_excel(label_file).iterrows()}
+#                     self.file_list = [[f, label[int(f.split('.')[0])]] for f in os.listdir(dataset_root)]
+
+#                 elif self.mode == "test": # 测试集没有label
+#                     self.file_list = [[f, None] for f in os.listdir(dataset_root)]
+                
+#                 if filelists is not None:  # 如果输入filelists，数据集为filelists中图片,dataset_root不起作用
+#                     self.file_list = [item for item in self.file_list if item[0] in filelists]
+    
+#     def __getitem__(self, idx):
+
+#         real_index, label = self.file_list[idx]
+#         # real_index = np.array(real_index)
+#         # real_index = torch.from_numpy(real_index)
+#         label = np.array(label)
+#         label = torch.from_numpy(label)
+#         img_path = os.path.join(self.dataset_root, real_index)    
+#         img = cv2.imread(img_path)
+#         img = trans.ToTensor(img)
+        
+#         if self.img_transforms is not None:
+#             img = self.img_transforms(img)
+#             img = img/255
+ 
+#         # normlize on GPU to save CPU Memory and IO consuming.
+#         # img = (img / 255.).astype("float32")
+#         # print(img.shape)
+#         # img = img.transpose(2, 0).transpose(1,2) # H, W, C -> C, H, W
+
+#         if self.mode == 'test':
+#             return img.float(), real_index
+
+#         if self.mode == "train":            
+#             return img.float(), label.long()
+
+#     def __len__(self):
+#         return len(self.file_list)
