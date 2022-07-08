@@ -92,7 +92,7 @@ class UNet(nn.Module):
             nn.BatchNorm2d(out_channels[0]),
             nn.ReLU(),
             nn.Conv2d(out_channels[0], out_channels=4, kernel_size=3, stride=1, padding=1), # out_channels=4为输出分割类别
-            nn.Sigmoid()
+            # nn.Sigmoid()
         )
     def forward(self, x):
         out_residual1, out1 = self.d1(x)
@@ -111,7 +111,8 @@ if __name__=='__main__':
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     net = UNet().to(device)
     img = torch.rand(1,3,256,256).to(device)
-    y = net(img)
+    for i in range(100):
+        y = net(img)
     print(y.shape)
     # cv2.imwrite('out.png', y.cpu().detach().numpy())
     summary(net, input_size=(3, 256,256))

@@ -4,7 +4,6 @@ import torch
 import torchvision.transforms as trans
 from models.task2_model import Model
 from dataset_functions.task2_dataset import GOALS_sub2_dataset
-import torchvision.transforms as trans
 
 
 
